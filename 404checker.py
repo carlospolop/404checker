@@ -119,7 +119,7 @@ async def check_all_methods(lines, good_urls):
 def multiprocess_executer(args):
     manager = multiprocessing.Manager()
     good_urls = manager.list()
-    cpus = multiprocessing.cpu_count()
+    num_threads = args.threads
     jobs = []
 
     if os.path.isfile(args.input_file):
@@ -127,13 +127,13 @@ def multiprocess_executer(args):
             lines = ifile.read().splitlines()
 
             # Here we are splitting the file in multiple pieces for better processing
-            parts_len = math.ceil(len(lines)/cpus)
+            parts_len = math.ceil(len(lines)/num_threads)
             parts = list(chunks_from_lines(lines, parts_len))
     else:
         logging.error("[!] File not found! {}".format(args.input_file))
         parser.print_help()
 
-    for i in range(cpus):
+    for i in range(num_threads):
         p = multiprocessing.Process(target=worker, args=(parts[i], good_urls))
         jobs.append(p)
         p.start()
@@ -179,6 +179,7 @@ if __name__ == '__main__':
     parser.add_argument("-i", "--input_file", help="Input file with urls on it (one per line)", type=str, required=True)
     parser.add_argument("-o", "--output_file", help="Output file with good urls (one per line)", type=str, required=True)
     parser.add_argument('-v', '--verbose', help="Be verbose", action="store_const", dest="loglevel", const=logging.INFO)
+    parser.add_argument('-t', '--threads', help="Number of threads (default number of cpus)", type=int, default=multiprocessing.cpu_count())
     args = parser.parse_args()
 
     if not os.path.isfile(args.input_file):
