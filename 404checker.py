@@ -108,9 +108,12 @@ async def puppeteer_page_titles(url):
 
 async def check_all_methods(lines, good_urls):
 
+    # This checks for 404, so by default the URL is added and only removed if this is a fake 404
     past_response = ""
     for url in lines:
         logging.info("[*] Checking URL: {}".format(url))
+        good_urls.append(url + "\n")
+        
         try:
             r = requests.get(url, timeout=15) #Max timeout reduced to 15s
         except:
@@ -120,23 +123,23 @@ async def check_all_methods(lines, good_urls):
         if past_response == r.text:
             logging.info("  [!] Same page detected. Skipping.")
             past_response = r.text
+            good_urls.remove(url + "\n")
             continue
 
         past_response = r.text
 
         # Splitted in three ifs to improve timing: If redirect
         if check_redirects(r):
-            continue
+            good_urls.remove(url + "\n")
 
         if requests_page_titles(r):
-            continue
+            good_urls.remove(url + "\n")
 
         ppt = await puppeteer_page_titles(url)
         if ppt:
-            continue
+            good_urls.remove(url + "\n")
 
         logging.info("[*] Url found legit!")
-        good_urls.append(url + "\n")
 
 
 def multiprocess_executer(args):
