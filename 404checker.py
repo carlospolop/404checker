@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 import multiprocessing
 import time
 import warnings
+from datetime import datetime
+
 
 
 bad_status_codes = [301, 303, 404]
@@ -156,11 +158,29 @@ def multiprocess_executer(args):
 
     for i in range(num_processes):
         p = multiprocessing.Process(target=worker, args=(parts[i], good_urls))
-        jobs.append(p)
+        jobs.append((p,parts[i]))
         p.start()
 
-    for proc in jobs:
-        proc.join()
+    # Give a max time running of 12 hours
+    start_time = datetime.now()
+
+    while (datetime.now() - start_time).seconds < 12*60*60:  # run for 12 hours max
+        time.sleep(1)  # short sleep to prevent busy looping
+        for proc, parts in jobs:
+            if not proc.is_alive():
+                jobs.remove(proc)  # remove completed processes from the list
+
+        if not jobs:  # if no jobs remain, break out of the loop
+            break
+
+    else:  # if the loop completed normally (not by 'break')
+        for proc, parts in jobs:  # terminate all remaining jobs
+            if proc.is_alive():
+                for part in parts:
+                    if not part in good_urls:
+                        good_urls.append(part + "\n")
+                print("Process is still running, timeout occurred.")
+                proc.terminate()
 
     with open(args.output_file, "w") as ofile:
         ofile.writelines(good_urls)
@@ -170,21 +190,6 @@ def chunks_from_lines(l, n):
     # looping till length l
     for i in range(0, len(l), n):
         yield l[i:i + n]
-
-def single_thread_executer(args):
-
-    if os.path.isfile(args.input_file):
-        with open(args.input_file, "r") as ifile:
-            lines = ifile.read().splitlines()
-    else:
-        logging.error("[!] File not found! {}".format(args.input_file))
-        parser.print_help()
-
-    good_urls = []
-    worker(lines, good_urls)
-
-    with open(args.output_file, "w") as ofile:
-        ofile.writelines(good_urls)
 
 
 def worker(lines, good_urls):
