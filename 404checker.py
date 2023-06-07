@@ -11,18 +11,31 @@ import multiprocessing
 import time
 import warnings
 
+
 bad_status_codes = [301, 303, 404]
 bad_texts = ["not found", "not exist", "don't exist", "can't be found", "invalid page", "invalid webpage", "invalid path"]
 probable_html_tags = ["h1", "h2", "h3", "title"]
-
 
 def check_redirects(response):
     logging.info("  [*] Checking if webpage with no redirects returns a bad code")
     origin_url = urlparse(response.url)
 
     # We create a list of probable simple redirects
-    origin_list = [origin_url.hostname, "http://" + origin_url.hostname, "https://" + origin_url.hostname, "http://" + origin_url.hostname + "/",
-                   "https://" + origin_url.hostname + "/", "http://" + origin_url.hostname + "/#", "https://" + origin_url.hostname + "/#"]
+    origin_list = [
+        origin_url.hostname,
+        "http://" + origin_url.hostname,
+        "https://" + origin_url.hostname,
+        "http://" + origin_url.hostname + "/",
+        "https://" + origin_url.hostname + "/",
+        "http://" + origin_url.hostname + "/#",
+        "https://" + origin_url.hostname + "/#",
+        "http://" + origin_url.hostname + ":80",
+        "https://" + origin_url.hostname + ":443",
+        "http://" + origin_url.hostname + ":80/",
+        "https://" + origin_url.hostname + ":443/",
+        "http://" + origin_url.hostname + ":80/#",
+        "https://" + origin_url.hostname + ":443/#",
+    ]
 
     # Check new and old urls
     if response.history:
@@ -34,7 +47,7 @@ def check_redirects(response):
     return False
 
 def requests_page_titles(response):
-
+    global bad_texts
     soup = BeautifulSoup(response.text, 'html.parser')
 
     logging.info("  [*] Searching for keywords using Beautiful Soup")
@@ -50,12 +63,15 @@ def requests_page_titles(response):
 async def puppeteer_page_titles(url):
 
     logging.info("  [*] Using Pyppeteer to find bad tags in dynamic html")
-    browser = await launch({"headless": True})
 
-    page = await browser.newPage()
-    page.setDefaultNavigationTimeout(15000); #Max timeout reduced to 15s
-    # set page viewport to the largest size
-    #await page.setViewport({"width": 1600, "height": 900})
+    try:
+        async with asyncio.TimeoutError(30):  # timeout of 30 seconds
+            browser = await launch({"headless": True})
+            page = await browser.newPage()
+            page.setDefaultNavigationTimeout(15000); #Max timeout reduced to 15s
+    except asyncio.TimeoutError:
+        logging.error("Browser launch timed out")
+
     # navigate to the page
     try:
         await page.goto(url)
@@ -93,7 +109,12 @@ async def check_all_methods(lines, good_urls):
     past_response = ""
     for url in lines:
         logging.info("[*] Checking URL: {}".format(url))
-        r = requests.get(url)
+        try:
+            r = requests.get(url, timeout=15) #Max timeout reduced to 15s
+        except:
+            logging.info("  [!] Timeout while awaiting for get request. Page may be down.")
+            continue
+        
         if past_response == r.text:
             logging.info("  [!] Same page detected. Skipping.")
             past_response = r.text
@@ -118,8 +139,8 @@ async def check_all_methods(lines, good_urls):
 
 def multiprocess_executer(args):
     manager = multiprocessing.Manager()
-    good_urls = manager.list()
-    num_threads = args.threads
+    good_urls = manager.list() # Creates a special type of list that can be safely manipulated by multiple processes.
+    num_processes = args.processes
     jobs = []
 
     if os.path.isfile(args.input_file):
@@ -127,13 +148,13 @@ def multiprocess_executer(args):
             lines = ifile.read().splitlines()
 
             # Here we are splitting the file in multiple pieces for better processing
-            parts_len = math.ceil(len(lines)/num_threads)
+            parts_len = math.ceil(len(lines)/num_processes)
             parts = list(chunks_from_lines(lines, parts_len))
     else:
         logging.error("[!] File not found! {}".format(args.input_file))
         parser.print_help()
 
-    for i in range(num_threads):
+    for i in range(num_processes):
         p = multiprocessing.Process(target=worker, args=(parts[i], good_urls))
         jobs.append(p)
         p.start()
@@ -179,7 +200,7 @@ if __name__ == '__main__':
     parser.add_argument("-i", "--input_file", help="Input file with urls on it (one per line)", type=str, required=True)
     parser.add_argument("-o", "--output_file", help="Output file with good urls (one per line)", type=str, required=True)
     parser.add_argument('-v', '--verbose', help="Be verbose", action="store_const", dest="loglevel", const=logging.INFO)
-    parser.add_argument('-t', '--threads', help="Number of threads (default number of cpus)", type=int, default=multiprocessing.cpu_count())
+    parser.add_argument('-p', '--processes', help="Number of processes (default number of cpus)", type=int, default=multiprocessing.cpu_count())
     args = parser.parse_args()
 
     if not os.path.isfile(args.input_file):
@@ -197,4 +218,3 @@ if __name__ == '__main__':
     multiprocess_end = time.time()
 
     print("Multiprocess time: {}".format(multiprocess_end - multiprocess_start))
-
