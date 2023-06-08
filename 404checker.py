@@ -171,7 +171,7 @@ def multiprocess_executer(args):
         time.sleep(1)  # short sleep to prevent busy looping
         for proc, parts in jobs:
             if not proc.is_alive():
-                jobs.remove(proc)  # remove completed processes from the list
+                jobs.remove((proc, parts))  # remove completed processes from the list
 
         if not jobs:  # if no jobs remain, break out of the loop
             break
