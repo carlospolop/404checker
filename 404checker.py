@@ -208,7 +208,7 @@ if __name__ == '__main__':
     parser.add_argument("-i", "--input_file", help="Input file with urls on it (one per line)", type=str, required=True)
     parser.add_argument("-o", "--output_file", help="Output file with good urls (one per line)", type=str, required=True)
     parser.add_argument('-v', '--verbose', help="Be verbose", action="store_const", dest="loglevel", const=logging.INFO)
-    parser.add_argument('-p', '--processes', help="Number of processes (default number of cpus)", type=int, default=multiprocessing.cpu_count())
+    parser.add_argument('-p', '--processes', help="Number of processes (default number of cpus)", type=int, default=int(multiprocessing.cpu_count()) if multiprocessing.cpu_count() > 1 else 1)
     args = parser.parse_args()
 
     if not os.path.isfile(args.input_file):
