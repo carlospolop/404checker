@@ -20,3 +20,6 @@ options:
 ## Results
 
 The tool will output all the URLs that are not being redirected to a custom 404 page.
+
+
+tETS
