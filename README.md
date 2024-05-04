@@ -5,7 +5,7 @@ URLs must be passed sorted in order to improve performance.
 ## Usage
 ```
 python3 404checker.py -h 
-usage: 404checker.py [-h] -i INPUT_FILE -o OUTPUT_FILE [-v]
+usage: 404checker.py [-h] -i INPUT_FILE -o OUTPUT_FILE [-v] [-p PROCESSES] [-u USER_AGENT]
 
 options:
   -h, --help            show this help message and exit
@@ -14,6 +14,10 @@ options:
   -o OUTPUT_FILE, --output_file OUTPUT_FILE
                         Output file with good urls (one per line)
   -v, --verbose         Be verbose
+  -p PROCESSES, --processes PROCESSES
+                        Number of processes (default number of cpus)
+  -u USER_AGENT, --user-agent USER_AGENT
+                        User Agent
 
 ```
 
