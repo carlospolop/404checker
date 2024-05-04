@@ -64,7 +64,7 @@ def check_redirects(url, response, response_404):
 
     return False
 
-def requests_page_titles(response):
+def check_page_titles(response):
     global BAD_TEXTS, PROBABLE_HTML_TAGS
     soup = BeautifulSoup(response.text, 'html.parser')
 
@@ -127,10 +127,6 @@ def check_non_js_methods(url, good_urls, user_agent, check_js_urls_list):
     if str(r.status_code) == "404":
         return
     
-    # If "not found" texts in titles of HTML, it's 404
-    if requests_page_titles(r):
-        return
-    
     # Get a real 404 in the same folder
     if len(url.split("/")) > 3:
         url_404 = "/".join(url.split("/")[:-1])+"/real404i32rohuf"
@@ -154,6 +150,18 @@ def check_non_js_methods(url, good_urls, user_agent, check_js_urls_list):
     
         if r_404:
             CACHE_404[url_404] = r_404
+    
+    # If "not found" texts in titles of HTML, it's 404
+    r_404_badpt = None
+    if r_404:
+        r_404_badpt = check_page_titles(r_404)
+    
+    r_badpt = check_page_titles(r)
+    
+    # Try to avoid false positives of the tags checking that the tags are also in the 404 response.
+    if r_badpt:
+        if r_404_badpt == None or r_404_badpt:
+            return
     
     # If redirects to root or suspicious valid page (like the one for the real 404), it's 404
     if check_redirects(url, r, r_404):
