@@ -74,7 +74,7 @@ def requests_page_titles(response):
         for tag in soup.find_all(prob_tag):
             for bad_text in BAD_TEXTS:
                 if bad_text in tag.get_text().lower():
-                    logging.info("      [-] Bad text found: {}".format(bad_text))
+                    logging.info("      [-] Bad text found for url {}: {}".format(response.ur, bad_text))
                     return True
 
 
