@@ -66,7 +66,7 @@ def check_redirects(url, response, response_404):
     return False
 
 def requests_page_titles(response):
-    global BAD_TEXTS
+    global BAD_TEXTS, PROBABLE_HTML_TAGS
     soup = BeautifulSoup(response.text, 'html.parser')
 
     #logging.info("  [*] Searching for keywords using Beautiful Soup")
@@ -80,6 +80,7 @@ def requests_page_titles(response):
 
 
 def js_checks(ini_url, page):
+    global BAD_TEXTS, PROBABLE_HTML_TAGS
     # Having accessed the URL with a browser, check the response
 
     html = page.content()
@@ -197,7 +198,6 @@ def multithread_executor(args, good_urls, check_js_urls_list):
         logging.error("[!] File not found! {}".format(args.input_file))
         parser.print_help()
 
-    print(f"Threads num: {num_threads}")
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
         futures = [executor.submit(check_non_js_methods, url, good_urls, user_agent, check_js_urls_list) for url in urls]
 
@@ -291,7 +291,6 @@ def chunks_from_lines(l, n):
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
 
-    warnings.filterwarnings("ignore", category=UserWarning, module='bs4', message='.*looks like a filename.*')
     warnings.filterwarnings("ignore", category=UserWarning, module='bs4', message='.*looks like a filename.*')
 
     parser = argparse.ArgumentParser()
