@@ -15,8 +15,6 @@ import concurrent.futures
 import threading
 from urllib3.exceptions import InsecureRequestWarning
 import urllib3
-import random
-import string
 
 
 urllib3.disable_warnings(InsecureRequestWarning)
@@ -135,11 +133,10 @@ def check_non_js_methods(url, good_urls, user_agent, check_js_urls_list):
         return
     
     # Get a real 404 in the same folder
-    rand_str = ''.join(random.choices(string.ascii_lowercase, k=4))
     if len(url.split("/")) > 3:
-        url_404 = "/".join(url.split("/")[:-1])+"/real404" + rand_str
+        url_404 = "/".join(url.split("/")[:-1])+"/real404i32rohuf"
     else: # In case something like "https://example.com" withuot not extra path
-        url_404 = url + "/real404" + rand_str
+        url_404 = url + "/real404i32rohuf"
 
     if url_404 in CACHE_404:
         r_404 = CACHE_404[url_404]
