@@ -1,5 +1,5 @@
 requests
 bs4
-pyppeteer
+pytest-playwright
 argparse
 tld
