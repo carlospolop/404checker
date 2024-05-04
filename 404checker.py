@@ -1,7 +1,6 @@
 import math
 import requests
 from bs4 import BeautifulSoup
-import asyncio
 from playwright.sync_api import sync_playwright
 import argparse
 import os.path
