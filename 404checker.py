@@ -15,7 +15,7 @@ from datetime import datetime
 
 
 bad_status_codes = [301, 303, 404]
-bad_texts = ["not found", "not exist", "don't exist", "can't be found", "invalid page", "invalid webpage", "invalid path"]
+bad_texts = ["not found", "not exist", "don't exist", "can't be found", "invalid page", "invalid webpage", "invalid path", "cannot get path "]
 probable_html_tags = ["h1", "h2", "h3", "title"]
 
 def check_redirects(response):
@@ -62,7 +62,7 @@ def requests_page_titles(response):
                     return True
 
 
-async def puppeteer_page_titles(url):
+async def puppeteer_page_titles(url, user_agent):
 
     logging.info("  [*] Using Pyppeteer to find bad tags in dynamic html")
 
@@ -106,19 +106,28 @@ async def puppeteer_page_titles(url):
     return False
 
 
-async def check_all_methods(lines, good_urls):
+async def check_all_methods(lines, good_urls, user_agent):
+
+    headers = {
+        'User-Agent': user_agent
+    }
 
     # This checks for 404, so by default the URL is added and only removed if this is a fake 404
     past_response = ""
     for url in lines:
         logging.info("[*] Checking URL: {}".format(url))
         good_urls.append(url + "\n")
-        
+
         try:
-            r = requests.get(url, timeout=15) #Max timeout reduced to 15s
+            r = requests.get(url, timeout=10, verify=False, headers=headers) #Max timeout reduced to 10s
         except:
-            logging.info("  [!] Timeout while awaiting for get request. Page may be down.")
-            continue
+            logging.info("  [!] Timeout while awaiting for get request. Retrying..")
+            try:
+                r = requests.get(url, timeout=10, verify=False, headers=headers) #Max timeout reduced to 10s
+            except:
+                logging.info("  [!] Timeout while awaiting for get request. Page might be down. Removing")
+                good_urls.remove(url + "\n")
+                continue
         
         if past_response == r.text:
             logging.info("  [!] Same page detected. Skipping.")
@@ -135,7 +144,7 @@ async def check_all_methods(lines, good_urls):
         if requests_page_titles(r):
             good_urls.remove(url + "\n")
 
-        ppt = await puppeteer_page_titles(url)
+        ppt = await puppeteer_page_titles(url, user_agent)
         if ppt:
             good_urls.remove(url + "\n")
 
@@ -146,6 +155,7 @@ def multiprocess_executer(args):
     manager = multiprocessing.Manager()
     good_urls = manager.list() # Creates a special type of list that can be safely manipulated by multiple processes.
     num_processes = args.processes
+    user_agent = args.user_agent
     jobs = []
 
     if os.path.isfile(args.input_file):
@@ -160,7 +170,7 @@ def multiprocess_executer(args):
         parser.print_help()
 
     for i in range(num_processes):
-        p = multiprocessing.Process(target=worker, args=(parts[i], good_urls))
+        p = multiprocessing.Process(target=worker, args=(parts[i], good_urls, user_agent))
         jobs.append((p,parts[i]))
         p.start()
 
@@ -196,8 +206,8 @@ def chunks_from_lines(l, n):
 
 """This is a test, detele me"""
 
-def worker(lines, good_urls):
-    asyncio.get_event_loop().run_until_complete(check_all_methods(lines, good_urls))
+def worker(lines, good_urls, user_agent):
+    asyncio.get_event_loop().run_until_complete(check_all_methods(lines, good_urls, user_agent))
 
 
 # Press the green button in the gutter to run the script.
@@ -210,6 +220,7 @@ if __name__ == '__main__':
     parser.add_argument("-o", "--output_file", help="Output file with good urls (one per line)", type=str, required=True)
     parser.add_argument('-v', '--verbose', help="Be verbose", action="store_const", dest="loglevel", const=logging.INFO)
     parser.add_argument('-p', '--processes', help="Number of processes (default number of cpus)", type=int, default=int(multiprocessing.cpu_count()) if multiprocessing.cpu_count() > 1 else 1)
+    parser.add_argument('-u', '--user-agent', help="User Agent", type=str, default="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
     args = parser.parse_args()
 
     if not os.path.isfile(args.input_file):
@@ -227,4 +238,3 @@ if __name__ == '__main__':
     multiprocess_end = time.time()
 
     print("Multiprocess time: {}".format(multiprocess_end - multiprocess_start))
-
