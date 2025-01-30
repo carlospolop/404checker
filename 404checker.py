@@ -24,6 +24,164 @@ LOCK_GOOD_URLS = threading.Lock()
 LOCK_JS_URLS = threading.Lock()
 
 
+
+def get_path_parts(url):
+    """
+    **Splits** the URL path into **folders** (ignoring empty segments).
+    """
+    parsed = urlparse(url)
+    # Example: 'http://example.com/en/articles/page' -> ['en', 'articles', 'page']
+    path_parts = [p for p in parsed.path.split('/') if p]
+    return parsed, path_parts
+
+
+def remove_urls_with_large_depth(urls, max_depth=20):
+    """
+    **Removes** URLs that have a path depth larger than `max_depth`.
+    """
+    filtered = []
+    for url in urls:
+        _, path_parts = get_path_parts(url)
+        # **Check if depth is > max_depth**
+        if len(path_parts) <= max_depth:
+            filtered.append(url)
+    return filtered
+
+
+def remove_urls_with_repeated_folders(urls, max_repeats=2):
+    """
+    **Removes** URLs that have the same folder name repeated
+    more than `max_repeats` times **in a row**.
+    """
+    filtered = []
+    for url in urls:
+        _, path_parts = get_path_parts(url)
+        # **Check for repeated folder names in a row**
+        has_too_many_repeats = False
+        current_count = 1
+        for i in range(1, len(path_parts)):
+            if path_parts[i] == path_parts[i-1]:
+                current_count += 1
+                if current_count > max_repeats:
+                    has_too_many_repeats = True
+                    break
+            else:
+                current_count = 1
+        if not has_too_many_repeats:
+            filtered.append(url)
+    return filtered
+
+def normalize_languages(urls):
+    """
+    **Normalization** steps based on **grouping** URLs that differ only by their **first folder**:
+
+    1. Group URLs by (scheme, domain, rest_of_path_ignoring_first_folder).
+    2. If a group has only 1 URL, keep it.
+    3. If multiple:
+       - Check if any first folder is "English-like" (starts with `en`).
+         If so, pick it as default.
+         Else if any is `zh`, pick that.
+         Else if any is `es`, pick that.
+         Else pick the first folder in that group.
+       - Build a **single** URL using the chosen folder and the shared rest path.
+    4. **Return** all final URLs (duplicates removed).
+    """
+
+    # A helper to detect an "English-like" folder (like "en", "en-us", etc.)
+    def is_english_folder(folder):
+        # Lowercase check: does it start with "en"?
+        return folder == "en" or (folder.lower().startswith("en-") and len(folder) < 7)
+
+    grouped = {}  # (scheme, domain, rest_path) -> list of dicts with {folder, original_url}
+
+    for url in urls:
+        parsed = urlparse(url)
+        scheme = parsed.scheme.lower()
+        domain = parsed.netloc.lower()
+
+        # Split path into folders
+        path_parts = [p for p in parsed.path.split('/') if p]
+
+        if not path_parts:
+            # No folders => no "first folder", rest path is empty
+            first_folder = ""
+            rest_path = ""
+        else:
+            # We'll ALWAYS treat the first part as "folder" (whether language or not)
+            first_folder = path_parts[0]
+            rest_path = "/".join(path_parts[1:])
+
+        key = (scheme, domain, rest_path)
+
+        if key not in grouped:
+            grouped[key] = []
+        grouped[key].append({
+            "folder": first_folder,
+            "original_url": url
+        })
+
+    final_urls = set()
+
+    # Now let's pick the final form for each group
+    for (scheme, domain, rest_path), items in grouped.items():
+        # If there's only 1 item in this group, we keep it as is
+        if len(items) == 1:
+            final_urls.add(items[0]["original_url"])
+            continue
+
+        # If there's more than 1 item, we pick a default folder
+        chosen_folder = None
+
+        # 1) If there's an "English-like" folder
+        english_candidates = [it["folder"] for it in items if is_english_folder(it["folder"])]
+        if english_candidates:
+            chosen_folder = english_candidates[0]
+        else:
+            # 2) If there's a "zh"
+            zh_candidates = [it["folder"] for it in items if it["folder"].lower() == "zh"]
+            if zh_candidates:
+                chosen_folder = zh_candidates[0]
+            else:
+                # 3) If there's an "es"
+                es_candidates = [it["folder"] for it in items if it["folder"].lower() == "es"]
+                if es_candidates:
+                    chosen_folder = es_candidates[0]
+                else:
+                    # 4) Otherwise pick the first folder from the group
+                    chosen_folder = items[0]["folder"]
+
+        # Construct a single final URL for the group
+        # If chosen_folder is empty, that means "root" (no folder).
+        # We'll build the path accordingly
+        # e.g. scheme://domain[/chosen_folder][/rest_path]
+        path_str = ""
+        if chosen_folder:
+            path_str += "/" + chosen_folder
+        if rest_path:
+            path_str += "/" + rest_path
+
+        final_url = f"{scheme}://{domain}{path_str}"
+        final_urls.add(final_url)
+
+    return list(final_urls)
+
+
+def filter_and_normalize_urls(all_urls):
+    """
+    Combined pipeline:
+      1) **Remove** URLs with depth > 20.
+      2) **Remove** URLs with repeated folders.
+      3) **Normalize** language paths (favor root, else 'en', 'xh', 'es', else first).
+    """
+    all_urls = remove_urls_with_large_depth(all_urls)
+    all_urls = remove_urls_with_repeated_folders(all_urls)
+    all_urls = normalize_languages(all_urls)
+    return all_urls
+
+
+
+
+
 def check_redirects(url, response, response_404):
     #logging.info("  [*] Checking if webpage with no redirects returns a bad code")
     origin_url = urlparse(url)
@@ -194,19 +352,12 @@ def check_non_js_methods(url, good_urls, user_agent, check_js_urls_list):
         logging.info(f"[*] {url} found legit in {r.url} as no JS required!")
 
 
-def multithread_executor(args, good_urls, check_js_urls_list):
+def multithread_executor(args, all_urls, good_urls, check_js_urls_list):
     num_threads = args.threads
     user_agent = args.user_agent
 
-    if os.path.isfile(args.input_file):
-        with open(args.input_file, "r") as ifile:
-            urls = ifile.read().splitlines()
-    else:
-        logging.error("[!] File not found! {}".format(args.input_file))
-        parser.print_help()
-
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
-        futures = [executor.submit(check_non_js_methods, url, good_urls, user_agent, check_js_urls_list) for url in urls]
+        futures = [executor.submit(check_non_js_methods, url, good_urls, user_agent, check_js_urls_list) for url in all_urls]
 
         # Wait for all futures and check for exceptions
         for future in futures:
@@ -318,11 +469,25 @@ if __name__ == '__main__':
         os.remove(os.path.realpath(args.output_file))
     except:
         pass
+    
+    all_urls = []
+    if os.path.isfile(args.input_file):
+        with open(args.input_file, "r") as ifile:
+            all_urls = ifile.read().splitlines()
+    else:
+        logging.error("[!] File not found! {}".format(args.input_file))
+        parser.print_help()
+        exit(1)
 
     good_urls, check_js_urls_list = [], []
+    
+    # Filter and normalize URLs to reduce the number of tests
+    print("Started with {} URLs".format(len(all_urls)))
+    all_urls = filter_and_normalize_urls(all_urls)
+    print("Reduced URLs to {}".format(len(all_urls)))
 
     multithread_start = time.time()
-    multithread_executor(args, good_urls, check_js_urls_list)
+    multithread_executor(args, all_urls, good_urls, check_js_urls_list)
     multithread_start = time.time()
     print("Multithread time: {}".format(multithread_start - multithread_start))
 
