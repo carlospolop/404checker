@@ -14,6 +14,7 @@ import concurrent.futures
 import threading
 from urllib3.exceptions import InsecureRequestWarning
 import urllib3
+import random
 
 
 urllib3.disable_warnings(InsecureRequestWarning)
@@ -458,6 +459,7 @@ if __name__ == '__main__':
     parser.add_argument('-t', '--threads', help="Number of threads (default 50)", type=int, default=50)
     parser.add_argument('-p', '--processes', help="Number of browser processes (default number of cpus)", type=int, default=int(multiprocessing.cpu_count()) if multiprocessing.cpu_count() > 1 else 1)
     parser.add_argument('-u', '--user-agent', help="User Agent", type=str, default="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+    parser.add_argument('-m', '--max-urls', default=50000, help="Max number of URLs (if more the rest will pass)", type=int)
     args = parser.parse_args()
 
     if not os.path.isfile(args.input_file):
@@ -485,6 +487,12 @@ if __name__ == '__main__':
     print("Started with {} URLs".format(len(all_urls)))
     all_urls = filter_and_normalize_urls(all_urls)
     print("Reduced URLs to {}".format(len(all_urls)))
+    random.shuffle(all_urls)
+
+    if len(all_urls) > args.max_urls:
+        print(f"Too many URLs ({len(all_urls)}). Only the first {args.max_urls} will be checked.")
+        all_urls = all_urls[:args.max_urls]
+        good_urls = good_urls[:args.max_urls]
 
     multithread_start = time.time()
     multithread_executor(args, all_urls, good_urls, check_js_urls_list)
