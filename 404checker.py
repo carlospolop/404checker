@@ -820,7 +820,6 @@ if __name__ == '__main__':
     # Check the sitemaps first
     all_urls = check_based_on_sitemaps(all_urls, good_urls)
     print("Reduced URLs to {} after sitemaps".format(len(all_urls)))
-    exit(1)
 
     random.shuffle(all_urls)
 
