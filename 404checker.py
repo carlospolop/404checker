@@ -15,9 +15,13 @@ import threading
 from urllib3.exceptions import InsecureRequestWarning
 import urllib3
 import random
+import tldextract
+import xml.etree.ElementTree as ET
+import re
 
 
 urllib3.disable_warnings(InsecureRequestWarning)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 BAD_TEXTS = ["not found", "not exist", "don't exist", "can't be found", "invalid page", "invalid webpage", "invalid path", "cannot get path "]
 PROBABLE_HTML_TAGS = ["h1", "h2", "h3", "title"]
 CACHE_404 = {}
@@ -25,6 +29,11 @@ LOCK_GOOD_URLS = threading.Lock()
 LOCK_JS_URLS = threading.Lock()
 
 
+
+
+#############################
+#### REMOVE USELESS URLS ####
+#############################
 
 def get_path_parts(url):
     """
@@ -166,6 +175,97 @@ def normalize_languages(urls):
 
     return list(final_urls)
 
+def filter_urls_by_numeric_and_folder_limits(all_urls):
+    """
+    1) Group URLs by (scheme, netloc, 'all but last path folder(s)').
+    2) In each group:
+       - Keep only first 20 URLs whose final path segment is purely numeric.
+       - Then from the entire group (numeric + non-numeric), keep only the first 50.
+    3) Return the filtered list in the original order.
+    """
+
+    # We'll group by (scheme, netloc, 'folder_path_up_to_last_segment')
+    # For example: http://example.com/foo/bar/123
+    #   - final_segment = "123"
+    #   - group_key = (scheme="http", netloc="example.com", folder_path="/foo/bar")
+    #
+    # Then store info about whether final_segment is numeric, plus original index to preserve order.
+
+    # A helper to detect if a final segment is purely numeric
+    def is_numeric_segment(segment):
+        return bool(re.fullmatch(r"\d+", segment))
+
+    grouped = {}
+    # We also keep the order in which URLs appear globally:
+    # We'll store each URL with its group key, final_segment, a boolean is_numeric, and the original index.
+    for idx, url in enumerate(all_urls):
+        parsed = urlparse(url)
+        scheme = parsed.scheme
+        netloc = parsed.netloc
+
+        # Split path into segments
+        parts = [p for p in parsed.path.split('/') if p]
+
+        if not parts:
+            # No final segment
+            final_segment = ""
+            folder_path = ""
+        else:
+            final_segment = parts[-1]
+            folder_path = "/" + "/".join(parts[:-1]) if len(parts) > 1 else ""
+
+        group_key = (scheme, netloc, folder_path)
+
+        if group_key not in grouped:
+            grouped[group_key] = []
+
+        grouped[group_key].append({
+            "url": url,
+            "is_numeric": is_numeric_segment(final_segment),
+            "index": idx
+        })
+
+    # Now let's apply the per-group rules
+    final_urls = []
+
+    for group_key, items in grouped.items():
+        # We want to preserve original order, so sort 'items' by their "index"
+        items.sort(key=lambda x: x["index"])
+
+        # 1) Keep only the first 20 with is_numeric == True
+        numeric_count = 0
+        for item in items:
+            if item["is_numeric"]:
+                numeric_count += 1
+                if numeric_count > 20:
+                    # Mark these for removal
+                    item["remove"] = True
+                else:
+                    item["remove"] = False
+            else:
+                item["remove"] = False
+
+        # 2) Now keep the first 50 overall in this group
+        #    We'll do a second pass counting how many we've kept so far
+        kept_in_group = 0
+        for item in items:
+            if not item["remove"]:
+                kept_in_group += 1
+                if kept_in_group > 50:
+                    # Mark for removal if we're over 50
+                    item["remove"] = True
+
+        # Collect the final set from this group
+        for item in items:
+            if not item["remove"]:
+                final_urls.append(item)
+
+    # Finally, re-sort by original index to restore global order
+    final_urls.sort(key=lambda x: x["index"])
+
+    # Extract just the URLs
+    return [x["url"] for x in final_urls]
+
 
 def filter_and_normalize_urls(all_urls):
     """
@@ -174,13 +274,243 @@ def filter_and_normalize_urls(all_urls):
       2) **Remove** URLs with repeated folders.
       3) **Normalize** language paths (favor root, else 'en', 'xh', 'es', else first).
     """
-    all_urls = remove_urls_with_large_depth(all_urls)
-    all_urls = remove_urls_with_repeated_folders(all_urls)
-    all_urls = normalize_languages(all_urls)
+    all_urls = remove_urls_with_large_depth(all_urls) # If too many folders, remove
+    all_urls = remove_urls_with_repeated_folders(all_urls) # If 3 or more repeated folders with the same name, remove
+    all_urls = normalize_languages(all_urls) # If same but in different languages, keep only one
+    all_urls = filter_urls_by_numeric_and_folder_limits(all_urls) # If too many files inside a folder, reduce
     return all_urls
 
 
 
+
+######################################
+#### CHECK URLS BASED ON SITEMAPS ####
+######################################
+
+# We will store data in this global dictionary to avoid re-checking the same domain
+# Structure:
+# domain_data = {
+#   "example.com": {
+#       "subdomains": {
+#           "www": {
+#               "sitemaps": set(["https://www.example.com/sitemap_index.xml", ...]),
+#               "discovered_urls": set(["https://www.example.com/page1", ...])
+#           },
+#           "": { ... },  # empty means "root" domain
+#           ...
+#       },
+#       "all_discovered_urls": set([...])  # union of discovered_urls from all subdomains
+#   },
+#   ...
+# }
+domain_data = {}
+sitemaps_downloaded = set()
+
+def get_tld_and_subdomain(url):
+    """
+    **Parses** the given URL to extract the **TLD** (e.g. 'example.com')
+    and the **subdomain** (e.g. 'blog' in 'blog.example.com').
+    Returns (tld, subdomain).
+    """
+    ext = tldextract.extract(url)
+    tld = f"{ext.domain}.{ext.suffix}"  # e.g. "example.com"
+    subdomain = ext.subdomain or ""      # e.g. "blog" or "" if none
+    return tld.lower(), subdomain.lower()
+
+def get_robots_url(tld, subdomain=""):
+    """
+    Returns a **robots.txt** URL for the **tld** and optional **subdomain**.
+    For a subdomain 'blog' and tld 'example.com', 
+    it might be 'https://blog.example.com/robots.txt'.
+    """
+    if subdomain:
+        return f"https://{subdomain}.{tld}/robots.txt"
+    else:
+        return f"https://{tld}/robots.txt"
+
+def get_root_sitemap_url(tld, subdomain=""):
+    """
+    Returns the **root** sitemap.xml path for a given TLD + subdomain.
+    """
+    if subdomain:
+        return f"https://{subdomain}.{tld}/sitemap.xml"
+    else:
+        return f"https://{tld}/sitemap.xml"
+
+def fetch_robots_sitemaps(tld, subdomain):
+    """
+    **Fetch** the robots.txt for (tld, subdomain) and **parse** out any 'Sitemap:' lines.
+    Returns a set of discovered sitemap URLs.
+    """
+    sitemaps_found = set()
+    url = get_robots_url(tld, subdomain)
+    
+    try:
+        print("Fetching robots.txt:", url)
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            for line in resp.text.splitlines():
+                line = line.strip()
+                # Lines can look like: "Sitemap: https://example.com/sitemap_index.xml"
+                if line.lower().startswith("sitemap:"):
+                    # Extract the URL after "Sitemap:"
+                    #print("Discovered sitemap:", line)
+                    sitemap_url = line.split(":", 1)[1].strip()
+                    sitemaps_found.add(sitemap_url)
+    except requests.RequestException:
+        # Could not fetch robots.txt
+        pass
+    
+    return sitemaps_found
+
+def parse_sitemap(sitemap_url, discovered_urls, discovered_sitemaps):
+    """
+    **Parses** the given sitemap URL (which may be an **index** of multiple sitemaps 
+    or a **regular** sitemap of URLs).
+
+    - If it's a sitemap **index**, we grab each child **<loc>** as a new sitemap to parse.
+    - If it's a **regular** sitemap, we grab each **<url><loc>** entry as a discovered URL.
+
+    Updates `discovered_urls` (set of URLs) 
+    and `discovered_sitemaps` (set of sitemaps) in-place.
+    """
+    global sitemaps_downloaded
+    
+    try:
+        #print(f"Checking sitemap {sitemap_url}")
+        if sitemap_url in sitemaps_downloaded:
+            return # Already downloaded
+        
+        sitemaps_downloaded.add(sitemap_url)
+        resp = requests.get(sitemap_url, timeout=5)
+        if resp.status_code != 200:
+            return  # Not found or error
+
+        # Parse the XML
+        root = ET.fromstring(resp.content)
+
+        # The root tag can be {...}sitemapindex or {...}urlset
+        tag_lower = root.tag.lower()
+        if "sitemapindex" in tag_lower:
+            # This is an index of sitemaps
+            for child in root.findall(".//{*}sitemap"):
+                loc_el = child.find("{*}loc")
+                if loc_el is not None and loc_el.text:
+                    new_sitemap = loc_el.text.strip()
+                    if new_sitemap not in discovered_sitemaps:
+                        #print(f"Discovered sitemap {new_sitemap} from {sitemap_url}")
+                        discovered_sitemaps.add(new_sitemap)
+                        # parse recursively
+                        parse_sitemap(new_sitemap, discovered_urls, discovered_sitemaps)
+        elif "urlset" in tag_lower:
+            # This is a list of URLs
+            for child in root.findall(".//{*}url"):
+                loc_el = child.find("{*}loc")
+                if loc_el is not None and loc_el.text:
+                    discovered_urls.add(loc_el.text.strip())
+        else:
+            # Some sitemaps might have unusual tags, or be empty
+            pass
+
+    except requests.RequestException:
+        # Network or parse error - skip
+        pass
+    except ET.ParseError:
+        # Not valid XML
+        pass
+
+def discover_all_sitemaps_and_urls(tld, subdomain):
+    """
+    **Discover** all sitemaps and URLs for the given TLD + subdomain:
+      1) Fetch & parse robots.txt for its Sitemaps
+      2) Check default /sitemap.xml
+      3) Recursively parse any discovered sitemaps for more sitemaps
+         or actual URLs.
+    Stores results in `domain_data[tld]['subdomains'][subdomain]`.
+    Also updates `domain_data[tld]['all_discovered_urls']`.
+    """
+    # Ensure structure is present
+    if tld not in domain_data:
+        domain_data[tld] = {
+            "subdomains": {},
+            "all_discovered_urls": set()
+        }
+    if subdomain not in domain_data[tld]["subdomains"]:
+        domain_data[tld]["subdomains"][subdomain] = {
+            "sitemaps": set(),
+            "discovered_urls": set()
+        }
+
+    subdomain_dict = domain_data[tld]["subdomains"][subdomain]
+
+    # 1) Fetch robots
+    found_in_robots = fetch_robots_sitemaps(tld, subdomain)
+    subdomain_dict["sitemaps"].update(found_in_robots)
+
+    # 2) Try default /sitemap.xml
+    sitemap_url = get_root_sitemap_url(tld, subdomain)
+    subdomain_dict["sitemaps"].add(sitemap_url)
+
+    # 3) Recursively parse each discovered sitemap
+    #    collecting all discovered URLs into subdomain_dict["discovered_urls"]
+    #    and new sitemaps into subdomain_dict["sitemaps"]
+    sitemaps_to_check = list(subdomain_dict["sitemaps"])
+
+    for sm in sitemaps_to_check:
+        parse_sitemap(sm, subdomain_dict["discovered_urls"], subdomain_dict["sitemaps"])
+
+    # 4) Update the TLD's 'all_discovered_urls' with what we found
+    domain_data[tld]["all_discovered_urls"].update(subdomain_dict["discovered_urls"])
+
+def check_url_in_sitemaps(url):
+    """
+    **Check** if the given URL is in the **discovered URLs** for its TLD (+ subdomain).
+    Returns **True** if found, **False** if not.
+    """
+    tld, subdom = get_tld_and_subdomain(url)
+    # If we haven't discovered tld yet, obviously we haven't found the URL
+    if tld not in domain_data:
+        return False
+
+    # We might not always store subdom if it was never discovered, but we can also check
+    # the TLD's all_discovered_urls:
+    return (url in domain_data[tld]["all_discovered_urls"])
+
+def check_based_on_sitemaps(all_urls, good_urls):
+    """
+    Main function to loop all input URLs and:
+      - Parse TLD + subdomain
+      - If TLD is new, discover sitemaps for TLD root + subdomain
+      - If TLD exists but subdomain is new, discover sitemaps for subdomain
+      - Then check if the URL is known => Return True or False
+    """
+    unknown_urls = []
+    for url in all_urls:
+        tld, subdom = get_tld_and_subdomain(url)
+
+        # If TLD not in domain_data, it's new => discover it
+        if tld not in domain_data:
+            discover_all_sitemaps_and_urls(tld, subdom)
+
+        # If subdomain not in domain_data[tld]["subdomains"], discover that too
+        elif subdom not in domain_data[tld]["subdomains"]:
+            discover_all_sitemaps_and_urls(tld, subdom)
+
+        # Now check if URL is in the known set
+        if check_url_in_sitemaps(url):
+            good_urls.append(url)
+        else:
+            unknown_urls.append(url)
+
+    return unknown_urls
+
+
+
+
+
+########################
+#### check for 404s ####
+########################
 
 
 def check_redirects(url, response, response_404):
@@ -368,7 +698,6 @@ def multithread_executor(args, all_urls, good_urls, check_js_urls_list):
                 print(f"Thread exception: {e}")
 
 
-
 def check_js_methods(urls, p_good_urls, user_agent):
     try:
         with sync_playwright() as p:
@@ -486,7 +815,13 @@ if __name__ == '__main__':
     # Filter and normalize URLs to reduce the number of tests
     print("Started with {} URLs".format(len(all_urls)))
     all_urls = filter_and_normalize_urls(all_urls)
-    print("Reduced URLs to {}".format(len(all_urls)))
+    print("Reduced URLs to {} after filtering".format(len(all_urls)))
+
+    # Check the sitemaps first
+    all_urls = check_based_on_sitemaps(all_urls, good_urls)
+    print("Reduced URLs to {} after sitemaps".format(len(all_urls)))
+    exit(1)
+
     random.shuffle(all_urls)
 
     if len(all_urls) > args.max_urls:
